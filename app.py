@@ -10,11 +10,11 @@ from collections import deque
 
 
 # --- KONFİGÜRASYON ---
-VOL_THRESHOLD = 35000  # 50,000 USDT Hacim Barajı (1dk veya 5dk içinde)
+VOL_THRESHOLD = 30000  # 50,000 USDT Hacim Barajı (1dk veya 5dk içinde)
 SHORT_WINDOW = 60  # 1 Dakika
 MEDIUM_WINDOW = 300  # 5 Dakika
-SHORT_PUMP_LIMIT = 2.0  # %1.2
-MEDIUM_PUMP_LIMIT = 2.0  # %3.0
+SHORT_PUMP_LIMIT = 1.0  # %1.2
+MEDIUM_PUMP_LIMIT = 1.0  # %3.0
 MAX_DISPLAY_ROWS = 100
 
 
