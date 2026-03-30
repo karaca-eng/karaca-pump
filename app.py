@@ -10,35 +10,35 @@ from datetime import datetime
 from collections import deque
 
 # --- CONFIGURATION ---
-VOL_THRESHOLD = 30000
-SHORT_WINDOW = 60
-SHORT_PUMP_LIMIT = 1.0
+VOL_THRESHOLD = 30000  
+SHORT_WINDOW = 60  
+SHORT_PUMP_LIMIT = 1.0  
 MAX_DISPLAY_ROWS = 100
-
 
 class MarketRadar:
     def __init__(self):
         self.history = {}
         self.signals = []
-        self.stats = {}
-        self.oi_cache = {}
+        self.stats = {} 
+        self.oi_cache = {} 
         self.lock = threading.Lock()
-        self.last_heartbeat = 0
+        self.last_heartbeat = 0  
         self.total_pairs = 0
-        self.last_reset_period = -1  # 0 veya 30. dakikayı takip eder
+        # İlk periyodu belirle (0-29 dk -> 0, 30-59 dk -> 1)
+        self.last_reset_period = datetime.now().minute // 30
+        self.last_reset_time_str = datetime.now().strftime("%H:%M")
 
     def check_periodic_reset(self):
-        """Her 30 dakikada bir (00. ve 30. dakikalarda) istatistikleri sıfırlar"""
+        """Her 30 dakikada bir (saat başı ve buçuklarda) istatistikleri sıfırlar"""
         now = datetime.now()
-        current_period = 0 if now.minute < 30 else 30
-
-        if self.last_reset_period == -1:
-            self.last_reset_period = current_period
-            return
-
+        current_period = now.minute // 30 # 0 veya 1
+        
+        # Periyot değiştiyse (Örn: 29'dan 30'a veya 59'dan 00'a geçiş)
         if current_period != self.last_reset_period:
-            self.stats.clear()  # Top 5 listesini temizle
-            self.last_reset_period = current_period
+            with self.lock:
+                self.stats = {} # Sözlüğü tamamen boşalt
+                self.last_reset_period = current_period
+                self.last_reset_time_str = now.strftime("%H:%M")
 
     def get_open_interest(self, symbol):
         try:
@@ -46,23 +46,24 @@ class MarketRadar:
             response = requests.get(url, timeout=2)
             if response.status_code == 200:
                 return float(response.json()['openInterest'])
-        except:
-            pass
+        except: pass
         return None
 
     def process_data(self, data):
-        now = time.time()
+        now_ts = time.time()
+        # Her veri paketinde sıfırlama vaktinin gelip gelmediğini kontrol et
+        self.check_periodic_reset()
+        
         with self.lock:
-            self.check_periodic_reset()  # Periyot kontrolü
-            self.last_heartbeat = now
+            self.last_heartbeat = now_ts  
             self.total_pairs = len(data)
             for item in data:
                 symbol = item['s']
                 if not symbol.endswith('USDT'): continue
                 price, quote_vol = float(item['c']), float(item['q'])
                 if symbol not in self.history: self.history[symbol] = deque(maxlen=305)
-                self.history[symbol].append((now, price, quote_vol))
-                self.check_pump_dump(symbol, now)
+                self.history[symbol].append((now_ts, price, quote_vol))
+                self.check_pump_dump(symbol, now_ts)
 
     def check_pump_dump(self, symbol, now):
         data = list(self.history[symbol])
@@ -74,10 +75,8 @@ class MarketRadar:
 
         res_type = None
         if vol_1m >= VOL_THRESHOLD:
-            if chg_1m >= SHORT_PUMP_LIMIT:
-                res_type = "PUMP"
-            elif chg_1m <= -SHORT_PUMP_LIMIT:
-                res_type = "DUMP"
+            if chg_1m >= SHORT_PUMP_LIMIT: res_type = "PUMP"
+            elif chg_1m <= -SHORT_PUMP_LIMIT: res_type = "DUMP"
 
         if res_type:
             current_oi = self.get_open_interest(symbol)
@@ -89,12 +88,15 @@ class MarketRadar:
     def add_signal(self, symbol, price, change, s_type, confirmed):
         t_str = datetime.now().strftime("%H:%M:%S")
         sym_clean = symbol.replace("USDT", "")
+        
+        # Aynı saniye içinde aynı coini engelle
         for s in self.signals[:5]:
-            if s['Symbol'] == sym_clean and s['Time'][:-1] == t_str[:-1]: return
-
+            if s['Symbol'] == sym_clean and s['Time'] == t_str: return
+        
+        # İstatistikleri güncelle
         if sym_clean not in self.stats: self.stats[sym_clean] = {"PUMP": 0, "DUMP": 0}
         self.stats[sym_clean][s_type] += 1
-
+        
         self.signals.insert(0, {
             "Time": t_str, "Symbol": sym_clean,
             "Price": f"{price:.4f}" if price < 1 else f"{price:.2f}",
@@ -103,10 +105,8 @@ class MarketRadar:
         })
         if len(self.signals) > MAX_DISPLAY_ROWS: self.signals.pop()
 
-
 @st.cache_resource
 def get_radar_instance(): return MarketRadar()
-
 
 async def binance_worker(radar_obj):
     uri = "wss://fstream.binance.com/ws/!miniTicker@arr"
@@ -116,9 +116,7 @@ async def binance_worker(radar_obj):
                 while True:
                     data = json.loads(await ws.recv())
                     radar_obj.process_data(data)
-        except:
-            await asyncio.sleep(5)
-
+        except: await asyncio.sleep(5)
 
 # --- UI DESIGN ---
 st.set_page_config(layout="wide", page_title="SinyalEngineer Radar")
@@ -131,7 +129,7 @@ st.markdown("""
     .dump-label { background-color: #ff4b4b; color: white; padding: 2px 8px; border-radius: 4px; font-weight: bold; }
     .stat-card { background-color: #1e2127; padding: 10px; border-radius: 10px; margin-bottom: 10px; border-left: 5px solid #f1c40f; }
     .warning-box { color: #ffb703; font-size: 0.75rem; font-style: italic; border-top: 1px solid #333; padding-top: 5px; }
-    .reset-info { color: #555; font-size: 0.7rem; font-weight: bold; margin-bottom: 10px; border: 1px dashed #333; padding: 5px; border-radius: 5px; text-align: center;}
+    .reset-info { color: #888; font-size: 0.65rem; font-weight: bold; margin-bottom: 5px; text-align: center; border: 1px solid #333; padding: 3px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -144,17 +142,13 @@ if "thread_started" not in st.session_state:
 h1, h2, h3 = st.columns([2, 1, 1])
 with h1:
     st.title("🛡️ Binance Futures Radar")
-    st.markdown(
-        '<div class="warning-box">⚠️ Avoid high leverage trading. / Yüksek kaldıraçlı işlemlerden uzak durunuz.</div>',
-        unsafe_allow_html=True)
+    st.markdown('<div class="warning-box">⚠️ Avoid high leverage trading. / Yüksek kaldıraçlı işlemlerden uzak durunuz.</div>', unsafe_allow_html=True)
 
 with h2:
     is_alive = (time.time() - radar.last_heartbeat) < 10
     status_html = '<span class="status-live">● SYSTEM LIVE</span>' if is_alive else '<span class="status-offline">● SYSTEM OFFLINE</span>'
     st.markdown(f"<div style='margin-top:10px;'>{status_html}</div>", unsafe_allow_html=True)
-    st.markdown(
-        f'<div style="margin-top:5px;"><a href="https://x.com/SinyalEngineer" target="_blank" style="color:white; text-decoration:none; font-weight:bold;">𝕏 @SinyalEngineer</a><br><small style="color:#888;">Follow for more / Takip et</small></div>',
-        unsafe_allow_html=True)
+    st.markdown(f'<div style="margin-top:5px;"><a href="https://x.com/SinyalEngineer" target="_blank" style="color:white; text-decoration:none; font-weight:bold;">𝕏 @SinyalEngineer</a><br><small style="color:#888;">Follow for more / Takip et</small></div>', unsafe_allow_html=True)
 
 with h3:
     st.metric("Pairs Tracked", radar.total_pairs)
@@ -167,17 +161,24 @@ placeholder_side = col_side.empty()
 placeholder_main = col_main.empty()
 
 while True:
-    # Sol Panel: Top 5 (30 Min Period)
+    # Sol Panel: Top 5 (30 Min Window)
     with placeholder_side.container():
         st.subheader("🔥 Top 5 Activity")
-        # Sıfırlamaya kalan süreyi hesapla
+        
+        # Sıfırlama Bilgisi
         now = datetime.now()
-        minutes_to_reset = 30 - (now.minute % 30)
-        st.markdown(f'<div class="reset-info">🕒 NEXT RESET IN: {minutes_to_reset} MIN</div>', unsafe_allow_html=True)
-
+        min_to_reset = 30 - (now.minute % 30)
+        st.markdown(f'''
+            <div class="reset-info">
+                LAST RESET: {radar.last_reset_time_str}<br>
+                NEXT RESET IN: {min_to_reset} MIN
+            </div>''', unsafe_allow_html=True)
+        
         with radar.lock:
+            # Toplam sinyal sayısına göre sırala
             sorted_stats = sorted(radar.stats.items(), key=lambda x: x[1]['PUMP'] + x[1]['DUMP'], reverse=True)[:5]
-            if not sorted_stats: st.info("Waiting for signals in this 30m window...")
+            if not sorted_stats: 
+                st.info("List is fresh! Waiting for signals...")
             for sym, counts in sorted_stats:
                 st.markdown(f'''
                     <div class="stat-card">
@@ -203,12 +204,12 @@ while True:
                     html += f"<td style='color:#f1c40f; font-weight:bold;'>{row['Symbol']}</td>"
                     html += f"<td>{row['Price']}</td>"
                     html += f"<td style='color:{color}; font-weight:bold;'>{row['Change']}</td>"
-                    html += f"<td><span class='{'pump-label' if row['P/D'] == 'PUMP' else 'dump-label'}'>{row['P/D']}</span></td>"
+                    html += f"<td><span class='{'pump-label' if row['P/D']=='PUMP' else 'dump-label'}'>{row['P/D']}</span></td>"
                     html += f"<td style='{oi_style}'>{row['OI']}</td>"
                     html += "</tr>"
                 html += "</table>"
                 st.markdown(html, unsafe_allow_html=True)
             else:
-                st.info("Scanning market... (OI filtering active 🔍)")
+                st.info("Scanning market for signals... (OI checking active 🔍)")
 
     time.sleep(1)
