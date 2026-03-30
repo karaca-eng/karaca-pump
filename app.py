@@ -15,7 +15,7 @@ SHORT_WINDOW = 60
 MEDIUM_WINDOW = 300
 SHORT_PUMP_LIMIT = 1.0
 MEDIUM_PUMP_LIMIT = 1.0
-MAX_DISPLAY_ROWS = 150
+MAX_DISPLAY_ROWS = 100
 
 
 class MarketRadar:
@@ -23,13 +23,13 @@ class MarketRadar:
         self.history = {}
         self.signals = []
         self.stats = {}
-        self.oi_cache = {}  # Open Interest verilerini tutmak için
+        self.oi_cache = {}
         self.lock = threading.Lock()
         self.last_heartbeat = 0
         self.total_pairs = 0
 
     def get_open_interest(self, symbol):
-        """Binance REST API üzerinden Open Interest verisini çeker"""
+        """Fetches Open Interest from Binance REST API"""
         try:
             url = f"https://fapi.binance.com/fapi/v1/openInterest?symbol={symbol}"
             response = requests.get(url, timeout=2)
@@ -68,7 +68,6 @@ class MarketRadar:
         chg_1m = ((current_price - short_past[1]) / short_past[1]) * 100
         vol_1m = current_vol - short_past[2]
 
-        # 1. Aşama: Fiyat ve Hacim Kontrolü
         res_type = None
         if vol_1m >= VOL_THRESHOLD:
             if chg_1m >= SHORT_PUMP_LIMIT:
@@ -77,26 +76,20 @@ class MarketRadar:
                 res_type = "DUMP"
 
         if res_type:
-            # 2. Aşama: Open Interest (OI) Doğrulaması
             current_oi = self.get_open_interest(symbol)
             last_oi = self.oi_cache.get(symbol, 0)
 
-            # Eğer OI artıyorsa (Yeni para giriyorsa) sinyali onayla
             oi_confirmed = False
             if current_oi and last_oi and current_oi > last_oi:
                 oi_confirmed = True
 
-            # OI değerini güncelle
             if current_oi: self.oi_cache[symbol] = current_oi
-
-            # Sinyali ekle (Sadece OI artışı olanları "Confirmed" olarak işaretle)
             self.add_signal(symbol, current_price, chg_1m, res_type, oi_confirmed)
 
     def add_signal(self, symbol, price, change, s_type, confirmed):
         t_str = datetime.now().strftime("%H:%M:%S")
         sym_clean = symbol.replace("USDT", "")
 
-        # Tekrar eden sinyalleri engelle
         for s in self.signals[:5]:
             if s['Symbol'] == sym_clean and s['Time'][:-1] == t_str[:-1]:
                 return
@@ -147,7 +140,8 @@ st.markdown("""
     .pump-label { background-color: #00ff88; color: black; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 0.9rem; }
     .dump-label { background-color: #ff4b4b; color: white; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 0.9rem; }
     .stat-card { background-color: #1e2127; padding: 10px; border-radius: 10px; margin-bottom: 10px; border-left: 5px solid #f1c40f; }
-    .instagram-link { color: #e1306c; text-decoration: none; font-weight: bold; font-size: 0.9rem; display: flex; align-items: center; gap: 5px; }
+    .x-link { color: #ffffff; text-decoration: none; font-weight: bold; font-size: 0.95rem; display: flex; align-items: center; gap: 8px; }
+    .x-link:hover { color: #1DA1F2; }
     .warning-box { color: #ffb703; font-size: 0.75rem; font-style: italic; margin-top: 5px; border-top: 1px solid #333; padding-top: 5px; }
     .oi-confirmed { color: #00ff88; font-weight: bold; font-size: 0.85rem; }
     .oi-neutral { color: #888; font-size: 0.85rem; }
@@ -172,16 +166,22 @@ with c2:
     is_alive = (time.time() - radar.last_heartbeat) < 10 if radar.last_heartbeat > 0 else False
     status_html = '<span class="status-live">● SYSTEM LIVE</span>' if is_alive else '<span class="status-offline">● SYSTEM OFFLINE</span>'
     st.markdown(f"<div style='margin-top:15px;'>{status_html}</div>", unsafe_allow_html=True)
-    st.markdown(
-        f'<div style="margin-top:8px;"><a href="https://instagram.com/karacabeat" class="instagram-link" target="_blank"><img src="https://upload.wikimedia.org/wikipedia/commons/e/e7/Instagram_logo_2016.svg" width="16"> @karacabeat</a></div>',
-        unsafe_allow_html=True)
+
+    # X (Twitter) Account Link
+    st.markdown(f"""
+        <div style="margin-top:8px;">
+            <a href="https://x.com/SinyalEngineer" class="x-link" target="_blank">
+                <img src="https://upload.wikimedia.org/wikipedia/commons/5/57/X_logo_2023_original.svg" width="16" style="filter: invert(1);"> @SinyalEngineer
+            </a>
+        </div>
+    """, unsafe_allow_html=True)
 
 with c3:
     st.metric("Pairs Tracked", radar.total_pairs)
 
 st.divider()
 
-# Main
+# Main Layout
 placeholder = st.empty()
 
 while True:
@@ -189,7 +189,7 @@ while True:
         col_side, col_main = st.columns([1, 4])
 
         with col_side:
-            st.subheader("🔥 Top 5 Coins")
+            st.subheader("🔥 Top 5 Activity")
             with radar.lock:
                 sorted_stats = sorted(radar.stats.items(), key=lambda x: x[1]['PUMP'] + x[1]['DUMP'], reverse=True)[:5]
                 if not sorted_stats: st.write("Waiting for data...")
