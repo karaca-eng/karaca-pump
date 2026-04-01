@@ -32,24 +32,39 @@ class MarketRadar:
     def check_hourly_reset(self):
         current_hour = datetime.now().hour
         if current_hour != self.last_reset_hour:
-            with self.lock:
-                self.stats.clear()
-                self.last_reset_hour = current_hour
+            self.stats.clear()
+            self.last_reset_hour = current_hour
 
     def calculate_rsi(self, symbol):
+        """Binance REST API'den mum verilerini çekip RSI hesaplar"""
         try:
+            # Binance Futures API klines endpoint
             url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval=1m&limit=50"
-            res = requests.get(url, timeout=2).json()
-            closes = np.array([float(m[4]) for m in res])
+            response = requests.get(url, timeout=3)
+            
+            if response.status_code != 200:
+                return None
+            
+            data = response.json()
+            if not isinstance(data, list) or len(data) < RSI_PERIOD:
+                return None
+            
+            # Kapanış fiyatlarını al (index 4)
+            closes = np.array([float(m[4]) for m in data])
+            
             diff = np.diff(closes)
-            gain = (diff > 0) * diff
-            loss = (diff < 0) * -diff
-            avg_gain = np.mean(gain[-RSI_PERIOD:])
-            avg_loss = np.mean(loss[-RSI_PERIOD:])
+            gain = np.where(diff > 0, diff, 0)
+            loss = np.where(diff < 0, -diff, 0)
+            
+            avg_gain = np.mean(gain[-(RSI_PERIOD+1):])
+            avg_loss = np.mean(loss[-(RSI_PERIOD+1):])
+            
             if avg_loss == 0: return 100
             rs = avg_gain / avg_loss
-            return 100 - (100 / (1 + rs))
-        except: return None
+            rsi = 100 - (100 / (1 + rs))
+            return round(rsi, 1)
+        except Exception as e:
+            return None
 
     def get_open_interest(self, symbol):
         try:
@@ -96,7 +111,10 @@ class MarketRadar:
             elif chg_1m <= -SHORT_PUMP_LIMIT: res_type = "DUMP"
 
         if res_type:
+            # ÖNEMLİ: RSI hesaplamasını kilit dışında yapmak performansı artırır ancak 
+            # mevcut yapıyı bozmamak için burada hızlıca çağırıyoruz.
             rsi = self.calculate_rsi(symbol)
+            
             current_oi = self.get_open_interest(symbol)
             last_oi = self.oi_cache.get(symbol, 0)
             oi_conf = (current_oi > last_oi) if (current_oi and last_oi) else False
@@ -113,20 +131,23 @@ class MarketRadar:
     def add_signal(self, symbol, price, change, s_type, confirmed, rsi, is_squeeze):
         t_str = datetime.now().strftime("%H:%M:%S")
         sym_clean = symbol.replace("USDT", "")
-        with self.lock:
-            for s in self.signals[:5]:
-                if s.get('Symbol') == sym_clean and s.get('Time', '')[:-1] == t_str[:-1]: return
-            if sym_clean not in self.stats: self.stats[sym_clean] = {"PUMP": 0, "DUMP": 0}
-            self.stats[sym_clean][s_type] += 1
-            self.signals.insert(0, {
-                "Time": t_str, "Symbol": sym_clean,
-                "Price": f"{price:.4f}" if price < 1 else f"{price:.2f}",
-                "Change": f"{change:+.2f}%", "P/D": s_type,
-                "OI": "✅ Confirmed" if confirmed else "⚪ Neutral",
-                "RSI": f"{rsi:.1f}" if rsi is not None else "--",
-                "Squeeze": "🔥 SQUEEZE" if is_squeeze else "Normal"
-            })
-            if len(self.signals) > MAX_DISPLAY_ROWS: self.signals.pop()
+        
+        # Aynı dakika içinde aynı sinyali tekrar basma
+        for s in self.signals[:5]:
+            if s.get('Symbol') == sym_clean and s.get('Time', '')[:-1] == t_str[:-1]: return
+        
+        if sym_clean not in self.stats: self.stats[sym_clean] = {"PUMP": 0, "DUMP": 0}
+        self.stats[sym_clean][s_type] += 1
+        
+        self.signals.insert(0, {
+            "Time": t_str, "Symbol": sym_clean,
+            "Price": f"{price:.4f}" if price < 1 else f"{price:.2f}",
+            "Change": f"{change:+.2f}%", "P/D": s_type,
+            "OI": "✅ Confirmed" if confirmed else "⚪ Neutral",
+            "RSI": str(rsi) if rsi is not None else "--",
+            "Squeeze": "🔥 SQUEEZE" if is_squeeze else "Normal"
+        })
+        if len(self.signals) > MAX_DISPLAY_ROWS: self.signals.pop()
 
 @st.cache_resource
 def get_radar_instance(): return MarketRadar()
@@ -192,7 +213,7 @@ col_side, col_main = st.columns([1, 4])
 with col_main:
     c_title, c_search = st.columns([3, 1])
     c_title.subheader("📡 Live Signals (Click symbol for chart)")
-    search_query = c_search.text_input("Filter", placeholder="Sym...", label_visibility="collapsed", key="search").upper()
+    search_query = c_search.text_input("Filter", placeholder="Sym...", label_visibility="collapsed", key="search_box").upper()
 
 placeholder_side = col_side.empty()
 placeholder_main = col_main.empty()
@@ -211,7 +232,6 @@ while True:
 
     with placeholder_main.container():
         with radar.lock:
-            # Filtreleme
             display_data = [s for s in radar.signals if search_query in s.get('Symbol', '')] if search_query else radar.signals
             
             if display_data:
@@ -221,11 +241,13 @@ while True:
                     sym = row.get('Symbol', 'UNK')
                     counts = radar.stats.get(sym, {"PUMP": 0, "DUMP": 0})
                     
-                    # Hata veren kısım için GÜVENLİ ERİŞİM
-                    rsi_raw = row.get('RSI', '--')
-                    rsi_val = float(rsi_raw) if rsi_raw != "--" else 50
+                    rsi_str = row.get('RSI', '--')
+                    try:
+                        rsi_val = float(rsi_str)
+                        rsi_color = "#ff4b4b" if rsi_val > 70 else "#00ff88" if rsi_val < 30 else "white"
+                    except:
+                        rsi_color = "white"
                     
-                    rsi_color = "#ff4b4b" if rsi_val > 70 else "#00ff88" if rsi_val < 30 else "white"
                     sq_status = row.get('Squeeze', 'Normal')
                     sq_html = f"<span class='squeeze-text'>{sq_status}</span>" if "SQUEEZE" in sq_status else "Normal"
                     
@@ -239,7 +261,7 @@ while True:
                     html += f"<td>{row.get('Price', '0')}</td>"
                     html += f"<td style='color:{p_color}; font-weight:bold;'>{row.get('Change', '0%')}</td>"
                     html += f"<td><span class='{'pump-label' if p_type=='PUMP' else 'dump-label'}'>{p_type}</span></td>"
-                    html += f"<td style='color:{rsi_color}; font-weight:bold;'>{rsi_raw}</td>"
+                    html += f"<td style='color:{rsi_color}; font-weight:bold;'>{rsi_str}</td>"
                     html += f"<td>{sq_html}</td>"
                     html += f"<td>{row.get('OI', '--')}</td></tr>"
                 st.markdown(html + "</table>", unsafe_allow_html=True)
