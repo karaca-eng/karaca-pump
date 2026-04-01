@@ -8,15 +8,14 @@ import threading
 from datetime import datetime
 from collections import deque
 
-# --- CONFIGURATION (3DK / 60K / 1.1% + STRONG TREND) ---
-VOL_THRESHOLD_3M = 60000  
-PUMP_LIMIT_3M = 1.1       
-STRONG_TREND_LIMIT = 3.0  
-TRI_WINDOW = 180          
+# --- CONFIGURATION (3DK / 60K AYARI) ---
+VOL_THRESHOLD_3M = 60000  # 3 Dakikada toplam 60k USDT Hacim
+PUMP_LIMIT_3M = 1.0       # 3 Dakikada min %1.0 Değişim
+TRI_WINDOW = 180          # 3 Dakika (Saniye cinsinden)
 
-SHORT_WINDOW = 60         
-MID_WINDOW = 300          
-LONG_WINDOW = 900         
+SHORT_WINDOW = 60         # 1m (Tablo için)
+MID_WINDOW = 300          # 5m (Tablo için)
+LONG_WINDOW = 900         # 15m (Tablo için)
 MAX_DISPLAY_ROWS = 100 
 
 class MarketRadar:
@@ -61,31 +60,33 @@ class MarketRadar:
         current = hist[-1]
         data_age = now - hist[0][0] 
 
-        # Trigger Logic (3m)
+        # 3 Dakikalık Tetikleyici Verileri
         past_3m = next((x for x in hist if now - x[0] <= TRI_WINDOW), hist[0])
         chg_3m = ((current[1] - past_3m[1]) / past_3m[1]) * 100
         vol_3m = current[2] - past_3m[2]
 
-        # Indicators (1m, 5m, 15m)
+        # Tablo için Diğer Veriler
         past_1m = next((x for x in hist if now - x[0] <= SHORT_WINDOW), hist[0])
         past_5m = next((x for x in hist if now - x[0] <= MID_WINDOW), hist[0])
         
-        c1 = ((current[1] - past_1m[1]) / past_1m[1]) * 100
-        c5 = ((current[1] - past_5m[1]) / past_5m[1]) * 100 if data_age >= MID_WINDOW else 0.0
-        c15 = ((current[1] - hist[0][1]) / hist[0][1]) * 100 if data_age >= LONG_WINDOW else 0.0
+        chg_1m = ((current[1] - past_1m[1]) / past_1m[1]) * 100
+        chg_5m = ((current[1] - past_5m[1]) / past_5m[1]) * 100 if data_age >= MID_WINDOW else 0.0
+        chg_15m = ((current[1] - hist[0][1]) / hist[0][1]) * 100 if data_age >= LONG_WINDOW else 0.0
 
         res_type = None
+        # TETİKLEME: 3 Dakikalık Hacim ve Fiyat Hareketine Göre
         if vol_3m >= VOL_THRESHOLD_3M:
             if chg_3m >= PUMP_LIMIT_3M: res_type = "PUMP"
             elif chg_3m <= -PUMP_LIMIT_3M: res_type = "DUMP"
 
         if res_type:
-            self.add_signal(symbol, current[1], c1, c5, c15, res_type)
+            self.add_signal(symbol, current[1], chg_1m, chg_5m, chg_15m, res_type)
 
     def add_signal(self, symbol, price, c1, c5, c15, s_type):
         t_str = datetime.now().strftime("%H:%M:%S")
         sym_clean = symbol.replace("USDT", "")
         with self.lock:
+            # Aynı dakika içinde aynı yöne tekrar basma
             for s in self.signals[:5]:
                 if s.get('Symbol') == sym_clean and s.get('Time', '')[:-1] == t_str[:-1] and s.get('P/D') == s_type: return
             
@@ -94,15 +95,10 @@ class MarketRadar:
             if sym_clean not in self.stats_daily: self.stats_daily[sym_clean] = {"PUMP": 0, "DUMP": 0}
             self.stats_daily[sym_clean][s_type] += 1
             
-            # Kademeli Onay: %3.0 barajı (Hem Artı Hem Eksi)
-            is_strong = abs(c15) >= STRONG_TREND_LIMIT
-
             self.signals.insert(0, {
                 "Time": t_str, "Symbol": sym_clean, "Price": f"{price:.4f}" if price < 1 else f"{price:.2f}",
                 "C1": c1, "C5": c5, "C15": c15, "P/D": s_type,
-                "SnapP": self.stats_daily[sym_clean]["PUMP"], 
-                "SnapD": self.stats_daily[sym_clean]["DUMP"], 
-                "Strong": is_strong
+                "SnapP": self.stats_daily[sym_clean]["PUMP"], "SnapD": self.stats_daily[sym_clean]["DUMP"]
             })
             if len(self.signals) > MAX_DISPLAY_ROWS: self.signals.pop()
 
@@ -134,11 +130,6 @@ st.markdown("""
     .sym-link { color: #f1c40f; text-decoration: none; font-weight: bold; }
     .green-arrow { color: #00ff88; font-weight: bold; }
     .red-arrow { color: #ff4b4b; font-weight: bold; }
-    
-    /* Güçlü Sinyal Renkleri (Şeffaf) */
-    .strong-pump { background-color: rgba(0, 255, 136, 0.12) !important; }
-    .strong-dump { background-color: rgba(255, 75, 75, 0.12) !important; }
-    
     div[data-testid="stTextInput"] > div { min-height: 0px; padding: 0px; }
     div[data-testid="stTextInput"] input { padding: 5px 10px; font-size: 0.85rem; }
     </style>
@@ -165,7 +156,7 @@ col_side, col_main = st.columns([1, 4])
 
 with col_main:
     header_col, search_col = st.columns([3, 1])
-    header_col.subheader("📡 Live Signals (3m/60k/1.1%)")
+    header_col.subheader("📡 Live Signals (3m/60k Trigger)")
     search_query = search_col.text_input("Filter", placeholder="🔍 Sym...", label_visibility="collapsed").upper()
 
 placeholder_side = col_side.empty()
@@ -199,20 +190,14 @@ while True:
                 for row in display_data:
                     sym = row.get('Symbol', 'UNK'); p_count = row.get('SnapP', 0); d_count = row.get('SnapD', 0)
                     tv_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{sym}USDT.P"
-                    c1 = row.get('C1', 0); c5 = row.get('C5', 0); c15 = row.get('C15', 0); p_type = row.get('P/D')
-                    
-                    # Row Highlighting (PUMP vs DUMP)
-                    row_style = ""
-                    if row.get('Strong'):
-                        row_style = ' class="strong-pump"' if p_type == "PUMP" else ' class="strong-dump"'
-                    
-                    html += f"<tr{row_style}><td>{row.get('Time')}</td>"
+                    c1 = row.get('C1', 0); c5 = row.get('C5', 0); c15 = row.get('C15', 0)
+                    html += f"<tr><td>{row.get('Time')}</td>"
                     html += f"<td><a href='{tv_url}' target='_blank' class='sym-link'>{sym}</a> <small class='green-arrow'>↑{p_count}</small> <small class='red-arrow'>↓{d_count}</small></td>"
                     html += f"<td>{row.get('Price')}</td>"
                     html += f"<td style='color:{get_color(c1)}; font-weight:bold;'>{c1:+.2f}%</td>"
                     html += f"<td style='color:{get_color(c5)}; font-weight:bold;'>{c5:+.2f}%</td>"
                     html += f"<td style='color:{get_color(c15)}; font-weight:bold;'>{c15:+.2f}%</td>"
-                    html += f"<td><span class='{'pump-label' if p_type=='PUMP' else 'dump-label'}'>{p_type}</span></td></tr>"
+                    html += f"<td><span class='{'pump-label' if row.get('P/D')=='PUMP' else 'dump-label'}'>{row.get('P/D')}</span></td></tr>"
                 st.markdown(html + "</table>", unsafe_allow_html=True)
             else: st.info("Scanning Market (3m filter active)...")
     time.sleep(1)
