@@ -9,12 +9,12 @@ from datetime import datetime
 from collections import deque
 
 # --- CONFIGURATION (BALİNA KARARLILIK AYARLARI) ---
-WHALE_VOL_3M = 100000    # Balina için 3dk'da 100k USDT
+WHALE_VOL_3M = 60000    # Balina için 3dk'da 100k USDT
 WHALE_CHG_3M = 2.0       # Balina için 3dk'da %2.0 Değişim
 NORMAL_LIMIT_3M = 1.1    # Normal sinyal barajı
 TRI_WINDOW = 180         # 3 Dakika
 
-MAX_DISPLAY_ROWS = 100 
+MAX_DISPLAY_ROWS = 200 
 SHORT_WINDOW = 60        # 1m
 MID_WINDOW = 300         # 5m
 LONG_WINDOW = 900        # 15m
