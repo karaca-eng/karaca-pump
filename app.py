@@ -9,21 +9,22 @@ from datetime import datetime
 from collections import deque
 
 # --- CONFIGURATION ---
-VOL_THRESHOLD = 30000  
-SHORT_WINDOW = 60      # 1m
-MID_WINDOW = 300       # 5m
-LONG_WINDOW = 900      # 15m
-PUMP_LIMIT = 1.0       
-MAX_DISPLAY_ROWS = 100 
+VOL_THRESHOLD = 30000
+SHORT_WINDOW = 60  # 1m
+MID_WINDOW = 300  # 5m
+LONG_WINDOW = 900  # 15m
+PUMP_LIMIT = 1.0
+MAX_DISPLAY_ROWS = 100
+
 
 class MarketRadar:
     def __init__(self):
         self.history = {}
         self.signals = []
-        self.stats_hourly = {} # Saatlik (Top 5)
+        self.stats_hourly = {}  # Saatlik (Top 5)
         self.stats_daily = {}  # Günlük (Oklar)
-        self.lock = threading.RLock() 
-        self.last_heartbeat = 0  
+        self.lock = threading.RLock()
+        self.last_heartbeat = 0
         self.total_pairs = 0
         self.last_reset_hour = datetime.now().hour
         self.last_reset_day = datetime.now().day
@@ -33,7 +34,7 @@ class MarketRadar:
         # Güvenli öznitelik kontrolü (Attribute check)
         if not hasattr(self, 'stats_hourly'): self.stats_hourly = {}
         if not hasattr(self, 'stats_daily'): self.stats_daily = {}
-        
+
         if now.hour != self.last_reset_hour:
             self.stats_hourly.clear()
             self.last_reset_hour = now.hour
@@ -45,14 +46,14 @@ class MarketRadar:
         now = time.time()
         with self.lock:
             self.check_resets()
-            self.last_heartbeat = now  
+            self.last_heartbeat = now
             self.total_pairs = len(data)
             for item in data:
                 symbol = item['s']
                 if not symbol.endswith('USDT'): continue
                 price, quote_vol = float(item['c']), float(item['q'])
-                if symbol not in self.history: 
-                    self.history[symbol] = deque(maxlen=1200) 
+                if symbol not in self.history:
+                    self.history[symbol] = deque(maxlen=1200)
                 self.history[symbol].append((now, price, quote_vol))
                 self.check_logic(symbol, now)
 
@@ -60,27 +61,29 @@ class MarketRadar:
         hist = list(self.history[symbol])
         if len(hist) < 10: return
         current = hist[-1]
-        data_age = now - hist[0][0] 
-        
+        data_age = now - hist[0][0]
+
         past_1m = next((x for x in hist if now - x[0] <= SHORT_WINDOW), hist[0])
         chg_1m = ((current[1] - past_1m[1]) / past_1m[1]) * 100
-        
+
         # Dinamik 5m ve 15m hesaplama
         chg_5m = 0.0
         if data_age >= MID_WINDOW:
             past_5m = next((x for x in hist if now - x[0] <= MID_WINDOW), hist[0])
             chg_5m = ((current[1] - past_5m[1]) / past_5m[1]) * 100
-            
+
         chg_15m = 0.0
         if data_age >= LONG_WINDOW:
             chg_15m = ((current[1] - hist[0][1]) / hist[0][1]) * 100
-            
+
         vol_1m = current[2] - past_1m[2]
 
         res_type = None
         if vol_1m >= VOL_THRESHOLD:
-            if chg_1m >= PUMP_LIMIT: res_type = "PUMP"
-            elif chg_1m <= -PUMP_LIMIT: res_type = "DUMP"
+            if chg_1m >= PUMP_LIMIT:
+                res_type = "PUMP"
+            elif chg_1m <= -PUMP_LIMIT:
+                res_type = "DUMP"
         if res_type:
             self.add_signal(symbol, current[1], chg_1m, chg_5m, chg_15m, res_type)
 
@@ -90,14 +93,15 @@ class MarketRadar:
         with self.lock:
             # Tekrar engelleme
             for s in self.signals[:5]:
-                if s.get('Symbol') == sym_clean and s.get('Time', '')[:-1] == t_str[:-1] and s.get('P/D') == s_type: return
-            
+                if s.get('Symbol') == sym_clean and s.get('Time', '')[:-1] == t_str[:-1] and s.get(
+                    'P/D') == s_type: return
+
             # Attribute garanti kontrolü
             if sym_clean not in self.stats_hourly: self.stats_hourly[sym_clean] = {"PUMP": 0, "DUMP": 0}
             self.stats_hourly[sym_clean][s_type] += 1
             if sym_clean not in self.stats_daily: self.stats_daily[sym_clean] = {"PUMP": 0, "DUMP": 0}
             self.stats_daily[sym_clean][s_type] += 1
-            
+
             # Sayıları dondurarak (Snapshot) ekle
             self.signals.insert(0, {
                 "Time": t_str, "Symbol": sym_clean, "Price": f"{price:.4f}" if price < 1 else f"{price:.2f}",
@@ -106,8 +110,10 @@ class MarketRadar:
             })
             if len(self.signals) > MAX_DISPLAY_ROWS: self.signals.pop()
 
+
 @st.cache_resource
 def get_radar_instance(): return MarketRadar()
+
 
 async def binance_worker(radar_obj):
     uri = "wss://fstream.binance.com/ws/!miniTicker@arr"
@@ -117,7 +123,9 @@ async def binance_worker(radar_obj):
                 while True:
                     msg = await ws.recv()
                     radar_obj.process_ticker(json.loads(msg))
-        except: await asyncio.sleep(5)
+        except:
+            await asyncio.sleep(5)
+
 
 # --- UI ---
 st.set_page_config(layout="wide", page_title="SinyalEngineer Radar")
@@ -151,7 +159,9 @@ h1.title("🛡️ Binance Price Radar")
 is_alive = (time.time() - radar.last_heartbeat) < 15 if radar.last_heartbeat > 0 else False
 status_html = '<span class="status-live">● SYSTEM LIVE</span>' if is_alive else '<span class="status-offline">● OFFLINE</span>'
 h2.markdown(f"<div style='margin-top:10px;'>{status_html}</div>", unsafe_allow_html=True)
-h2.markdown(f'<a href="https://x.com/SinyalEngineer" target="_blank" style="color:white; text-decoration:none; font-weight:bold;">𝕏 @SinyalEngineer</a>', unsafe_allow_html=True)
+h2.markdown(
+    f'<a href="https://x.com/SinyalEngineer" target="_blank" style="color:white; text-decoration:none; font-weight:bold;">𝕏 @SinyalEngineer</a>',
+    unsafe_allow_html=True)
 h3.metric("Pairs Tracked", radar.total_pairs)
 
 st.divider()
@@ -168,10 +178,12 @@ with col_main:
 placeholder_side = col_side.empty()
 placeholder_main = col_main.empty()
 
+
 def get_color(val):
     if val > 0.1: return "#00ff88"
     if val < -0.1: return "#ff4b4b"
     return "white"
+
 
 while True:
     with placeholder_side.container():
@@ -192,8 +204,9 @@ while True:
         with radar.lock:
             # HATA ÖNLEYİCİ GÜVENLİ ERİŞİM (getattr)
             all_signals = getattr(radar, 'signals', [])
-            display_data = [s for s in all_signals if search_query in s.get('Symbol', '')] if search_query else all_signals
-            
+            display_data = [s for s in all_signals if
+                            search_query in s.get('Symbol', '')] if search_query else all_signals
+
             if display_data:
                 html = "<table><tr><th>Time</th><th>Symbol (Daily ↑/↓)</th><th>Price</th><th>1m</th><th>5m</th><th>15m</th><th>Type</th></tr>"
                 for row in display_data:
@@ -201,14 +214,17 @@ while True:
                     p_count = row.get('SnapP', 0)
                     d_count = row.get('SnapD', 0)
                     tv_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{sym}USDT.P"
-                    c1 = row.get('C1', 0); c5 = row.get('C5', 0); c15 = row.get('C15', 0)
+                    c1 = row.get('C1', 0);
+                    c5 = row.get('C5', 0);
+                    c15 = row.get('C15', 0)
                     html += f"<tr><td>{row.get('Time')}</td>"
                     html += f"<td><a href='{tv_url}' target='_blank' class='sym-link'>{sym}</a> <small class='green-arrow'>↑{p_count}</small> <small class='red-arrow'>↓{d_count}</small></td>"
                     html += f"<td>{row.get('Price')}</td>"
                     html += f"<td style='color:{get_color(c1)}; font-weight:bold;'>{c1:+.2f}%</td>"
                     html += f"<td style='color:{get_color(c5)}; font-weight:bold;'>{c5:+.2f}%</td>"
                     html += f"<td style='color:{get_color(c15)}; font-weight:bold;'>{c15:+.2f}%</td>"
-                    html += f"<td><span class='{'pump-label' if row.get('P/D')=='PUMP' else 'dump-label'}'>{row.get('P/D')}</span></td></tr>"
+                    html += f"<td><span class='{'pump-label' if row.get('P/D') == 'PUMP' else 'dump-label'}'>{row.get('P/D')}</span></td></tr>"
                 st.markdown(html + "</table>", unsafe_allow_html=True)
-            else: st.info("Waiting for data...")
+            else:
+                st.info("Waiting for data...")
     time.sleep(1)
