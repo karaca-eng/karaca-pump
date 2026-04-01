@@ -20,8 +20,8 @@ class MarketRadar:
     def __init__(self):
         self.history = {}
         self.signals = []
-        self.stats_hourly = {} 
-        self.stats_daily = {}  
+        self.stats_hourly = {} # Saatlik (Top 5)
+        self.stats_daily = {}  # Günlük (Oklar)
         self.lock = threading.RLock() 
         self.last_heartbeat = 0  
         self.total_pairs = 0
@@ -30,6 +30,10 @@ class MarketRadar:
 
     def check_resets(self):
         now = datetime.now()
+        # Güvenli öznitelik kontrolü (Attribute check)
+        if not hasattr(self, 'stats_hourly'): self.stats_hourly = {}
+        if not hasattr(self, 'stats_daily'): self.stats_daily = {}
+        
         if now.hour != self.last_reset_hour:
             self.stats_hourly.clear()
             self.last_reset_hour = now.hour
@@ -57,10 +61,20 @@ class MarketRadar:
         if len(hist) < 10: return
         current = hist[-1]
         data_age = now - hist[0][0] 
+        
         past_1m = next((x for x in hist if now - x[0] <= SHORT_WINDOW), hist[0])
         chg_1m = ((current[1] - past_1m[1]) / past_1m[1]) * 100
-        chg_5m = ((current[1] - (next((x for x in hist if now - x[0] <= MID_WINDOW), hist[0]))[1]) / (next((x for x in hist if now - x[0] <= MID_WINDOW), hist[0]))[1]) * 100 if data_age >= MID_WINDOW else 0.0
-        chg_15m = ((current[1] - hist[0][1]) / hist[0][1]) * 100 if data_age >= LONG_WINDOW else 0.0
+        
+        # Dinamik 5m ve 15m hesaplama
+        chg_5m = 0.0
+        if data_age >= MID_WINDOW:
+            past_5m = next((x for x in hist if now - x[0] <= MID_WINDOW), hist[0])
+            chg_5m = ((current[1] - past_5m[1]) / past_5m[1]) * 100
+            
+        chg_15m = 0.0
+        if data_age >= LONG_WINDOW:
+            chg_15m = ((current[1] - hist[0][1]) / hist[0][1]) * 100
+            
         vol_1m = current[2] - past_1m[2]
 
         res_type = None
@@ -74,12 +88,17 @@ class MarketRadar:
         t_str = datetime.now().strftime("%H:%M:%S")
         sym_clean = symbol.replace("USDT", "")
         with self.lock:
+            # Tekrar engelleme
             for s in self.signals[:5]:
                 if s.get('Symbol') == sym_clean and s.get('Time', '')[:-1] == t_str[:-1] and s.get('P/D') == s_type: return
+            
+            # Attribute garanti kontrolü
             if sym_clean not in self.stats_hourly: self.stats_hourly[sym_clean] = {"PUMP": 0, "DUMP": 0}
             self.stats_hourly[sym_clean][s_type] += 1
             if sym_clean not in self.stats_daily: self.stats_daily[sym_clean] = {"PUMP": 0, "DUMP": 0}
             self.stats_daily[sym_clean][s_type] += 1
+            
+            # Sayıları dondurarak (Snapshot) ekle
             self.signals.insert(0, {
                 "Time": t_str, "Symbol": sym_clean, "Price": f"{price:.4f}" if price < 1 else f"{price:.2f}",
                 "C1": c1, "C5": c5, "C15": c15, "P/D": s_type,
@@ -158,7 +177,8 @@ while True:
     with placeholder_side.container():
         st.subheader("🔥 Top 5 Activity")
         with radar.lock:
-            h_stats = dict(radar.stats_hourly)
+            # HATA ÖNLEYİCİ GÜVENLİ ERİŞİM (getattr)
+            h_stats = getattr(radar, 'stats_hourly', {})
             sorted_stats = sorted(h_stats.items(), key=lambda x: x[1]['PUMP'] + x[1]['DUMP'], reverse=True)[:5]
             if not sorted_stats: st.write("Scanning...")
             for sym, counts in sorted_stats:
@@ -170,12 +190,16 @@ while True:
 
     with placeholder_main.container():
         with radar.lock:
-            signals_copy = list(radar.signals)
-            display_data = [s for s in signals_copy if search_query in s.get('Symbol', '')] if search_query else signals_copy
+            # HATA ÖNLEYİCİ GÜVENLİ ERİŞİM (getattr)
+            all_signals = getattr(radar, 'signals', [])
+            display_data = [s for s in all_signals if search_query in s.get('Symbol', '')] if search_query else all_signals
+            
             if display_data:
                 html = "<table><tr><th>Time</th><th>Symbol (Daily ↑/↓)</th><th>Price</th><th>1m</th><th>5m</th><th>15m</th><th>Type</th></tr>"
                 for row in display_data:
-                    sym = row.get('Symbol', 'UNK'); p_count = row.get('SnapP', 0); d_count = row.get('SnapD', 0)
+                    sym = row.get('Symbol', 'UNK')
+                    p_count = row.get('SnapP', 0)
+                    d_count = row.get('SnapD', 0)
                     tv_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{sym}USDT.P"
                     c1 = row.get('C1', 0); c5 = row.get('C5', 0); c15 = row.get('C15', 0)
                     html += f"<tr><td>{row.get('Time')}</td>"
