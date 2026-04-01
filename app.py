@@ -8,7 +8,7 @@ import threading
 from datetime import datetime
 from collections import deque
 
-# --- CONFIGURATION (3DK / 60K / 1.1%) ---
+# --- CONFIGURATION (3DK / 60K / 1.1% + STRONG TREND) ---
 VOL_THRESHOLD_3M = 60000  
 PUMP_LIMIT_3M = 1.1       
 STRONG_TREND_LIMIT = 3.0  
@@ -61,12 +61,12 @@ class MarketRadar:
         current = hist[-1]
         data_age = now - hist[0][0] 
 
-        # 3 Dakikalık Tetikleyici (Asıl Karar Mekanizması)
+        # 3 Dakikalık Tetikleyici
         past_3m = next((x for x in hist if now - x[0] <= TRI_WINDOW), hist[0])
         chg_3m = ((current[1] - past_3m[1]) / past_3m[1]) * 100
         vol_3m = current[2] - past_3m[2]
 
-        # Tablo Verileri
+        # Tablo Değişim Verileri
         past_1m = next((x for x in hist if now - x[0] <= SHORT_WINDOW), hist[0])
         past_5m = next((x for x in hist if now - x[0] <= MID_WINDOW), hist[0])
         
@@ -90,15 +90,17 @@ class MarketRadar:
             for s in self.signals[:5]:
                 if s.get('Symbol') == sym_clean and s.get('Time', '')[:-1] == t_str[:-1] and s.get('P/D') == s_type: return
             
-            # İstatistik Güncelleme
+            # İstatistikleri Güncelle
             if sym_clean not in self.stats_hourly: self.stats_hourly[sym_clean] = {"PUMP": 0, "DUMP": 0}
             self.stats_hourly[sym_clean][s_type] += 1
             if sym_clean not in self.stats_daily: self.stats_daily[sym_clean] = {"PUMP": 0, "DUMP": 0}
             self.stats_daily[sym_clean][s_type] += 1
             
-            # Snapshots (Anlık sayıları dondur)
+            # Snapshot: O anki sayıyı dondur
             sp = self.stats_daily[sym_clean]["PUMP"]
             sd = self.stats_daily[sym_clean]["DUMP"]
+            
+            # Kademeli Onay: %3.0 barajı (C15)
             is_strong = abs(c15) >= STRONG_TREND_LIMIT
 
             self.signals.insert(0, {
@@ -127,6 +129,7 @@ st.set_page_config(layout="wide", page_title="SinyalEngineer Radar")
 
 st.markdown("""
     <style>
+    .main { background-color: #0e1117; }
     .status-live { color: #00ff88; font-weight: bold; border: 1px solid #00ff88; padding: 2px 10px; border-radius: 15px; font-size: 0.8rem; }
     .pump-label { background-color: #00ff88; color: black; padding: 2px 8px; border-radius: 4px; font-weight: bold; }
     .dump-label { background-color: #ff4b4b; color: white; padding: 2px 8px; border-radius: 4px; font-weight: bold; }
@@ -136,8 +139,11 @@ st.markdown("""
     .sym-link { color: #f1c40f; text-decoration: none; font-weight: bold; }
     .green-arrow { color: #00ff88; font-weight: bold; }
     .red-arrow { color: #ff4b4b; font-weight: bold; }
+    
+    /* Güçlü Sinyal Renkleri (Şeffaf Arka Plan) */
     .strong-pump { background-color: rgba(0, 255, 136, 0.12) !important; }
     .strong-dump { background-color: rgba(255, 75, 75, 0.12) !important; }
+    
     div[data-testid="stTextInput"] > div { min-height: 0px; padding: 0px; }
     div[data-testid="stTextInput"] input { padding: 5px 10px; font-size: 0.85rem; }
     </style>
@@ -159,11 +165,13 @@ h3.metric("Pairs Tracked", radar.total_pairs)
 
 st.divider()
 
+# Layout
 col_side, col_main = st.columns([1, 4])
+
 with col_main:
     header_col, search_col = st.columns([3, 1])
     header_col.subheader("📡 Live Signals (3m/60k/1.1%)")
-    search_query = search_col.text_input("Filter", placeholder="🔍 Sym...", label_visibility="collapsed", key="gs").upper()
+    search_query = search_col.text_input("Filter", placeholder="🔍 Sym...", label_visibility="collapsed", key="gs_input").upper()
 
 placeholder_side = col_side.empty()
 placeholder_main = col_main.empty()
@@ -177,13 +185,16 @@ while True:
     with placeholder_side.container():
         st.subheader("🔥 Top 5 Activity")
         with radar.lock:
-            # Defensive get for attributes
+            # AttributeError önleyici getattr kullanımı
             h_stats = getattr(radar, 'stats_hourly', {})
             sorted_stats = sorted(h_stats.items(), key=lambda x: x[1]['PUMP'] + x[1]['DUMP'], reverse=True)[:5]
+            if not sorted_stats: st.write("Scanning...")
             for sym, counts in sorted_stats:
                 tv_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{sym}USDT.P"
-                st.markdown(f'''<div class="stat-card"><a href="{tv_url}" target="_blank" class="sym-link">{sym}</a><br>
-                <small><span class="green-arrow">↑ {counts["PUMP"]}</span> | <span class="red-arrow">↓ {counts["DUMP"]}</span></small></div>''', unsafe_allow_html=True)
+                st.markdown(f'''<div class="stat-card">
+                    <a href="{tv_url}" target="_blank" class="sym-link">{sym}</a><br>
+                    <small><span class="green-arrow">↑ {counts["PUMP"]}</span> | <span class="red-arrow">↓ {counts["DUMP"]}</span></small>
+                </div>''', unsafe_allow_html=True)
 
     with placeholder_main.container():
         with radar.lock:
@@ -195,6 +206,8 @@ while True:
                     sym = row.get('Symbol', 'UNK'); p_count = row.get('SnapP', 0); d_count = row.get('SnapD', 0)
                     tv_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{sym}USDT.P"
                     c1, c3, c5, c15 = row.get('C1', 0), row.get('C3', 0), row.get('C5', 0), row.get('C15', 0); p_type = row.get('P/D')
+                    
+                    # Güçlü Trend Boyama (Kademeli Onay)
                     row_style = ""
                     if row.get('Strong'):
                         row_style = ' class="strong-pump"' if p_type == "PUMP" else ' class="strong-dump"'
