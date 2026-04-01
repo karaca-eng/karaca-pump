@@ -10,27 +10,29 @@ from datetime import datetime
 from collections import deque
 
 # --- CONFIGURATION ---
-VOL_THRESHOLD = 30000  
-SHORT_WINDOW = 60  
-SHORT_PUMP_LIMIT = 1.0  
+VOL_THRESHOLD = 30000
+SHORT_WINDOW = 60
+SHORT_PUMP_LIMIT = 1.0
 MAX_DISPLAY_ROWS = 100
+
 
 class MarketRadar:
     def __init__(self):
         self.history = {}
         self.signals = []
-        self.stats = {} 
-        self.oi_cache = {} 
+        self.stats = {}
+        self.oi_cache = {}
         self.lock = threading.Lock()
-        self.last_heartbeat = 0  
+        self.last_heartbeat = 0
         self.total_pairs = 0
-        self.last_reset_hour = datetime.now().hour # Saatlik sıfırlama takibi için
+        # Saatlik sıfırlama takibi için başlangıç saati
+        self.last_reset_hour = datetime.now().hour
 
     def check_hourly_reset(self):
-        """Her yeni saat başında Top 5 istatistiklerini sıfırlar"""
+        """Yeni bir saate geçildiğinde Top 5 istatistiklerini temizler"""
         current_hour = datetime.now().hour
         if current_hour != self.last_reset_hour:
-            self.stats.clear() # İstatistikleri temizle
+            self.stats.clear()
             self.last_reset_hour = current_hour
 
     def get_open_interest(self, symbol):
@@ -39,14 +41,15 @@ class MarketRadar:
             response = requests.get(url, timeout=2)
             if response.status_code == 200:
                 return float(response.json()['openInterest'])
-        except: pass
+        except:
+            pass
         return None
 
     def process_data(self, data):
         now = time.time()
         with self.lock:
-            self.check_hourly_reset() # Veri işlenirken saat kontrolü yap
-            self.last_heartbeat = now  
+            self.check_hourly_reset()  # Her veri paketinde saat kontrolü yap
+            self.last_heartbeat = now
             self.total_pairs = len(data)
             for item in data:
                 symbol = item['s']
@@ -66,8 +69,10 @@ class MarketRadar:
 
         res_type = None
         if vol_1m >= VOL_THRESHOLD:
-            if chg_1m >= SHORT_PUMP_LIMIT: res_type = "PUMP"
-            elif chg_1m <= -SHORT_PUMP_LIMIT: res_type = "DUMP"
+            if chg_1m >= SHORT_PUMP_LIMIT:
+                res_type = "PUMP"
+            elif chg_1m <= -SHORT_PUMP_LIMIT:
+                res_type = "DUMP"
 
         if res_type:
             current_oi = self.get_open_interest(symbol)
@@ -81,10 +86,10 @@ class MarketRadar:
         sym_clean = symbol.replace("USDT", "")
         for s in self.signals[:5]:
             if s['Symbol'] == sym_clean and s['Time'][:-1] == t_str[:-1]: return
-        
+
         if sym_clean not in self.stats: self.stats[sym_clean] = {"PUMP": 0, "DUMP": 0}
         self.stats[sym_clean][s_type] += 1
-        
+
         self.signals.insert(0, {
             "Time": t_str, "Symbol": sym_clean,
             "Price": f"{price:.4f}" if price < 1 else f"{price:.2f}",
@@ -93,8 +98,10 @@ class MarketRadar:
         })
         if len(self.signals) > MAX_DISPLAY_ROWS: self.signals.pop()
 
+
 @st.cache_resource
 def get_radar_instance(): return MarketRadar()
+
 
 async def binance_worker(radar_obj):
     uri = "wss://fstream.binance.com/ws/!miniTicker@arr"
@@ -104,9 +111,11 @@ async def binance_worker(radar_obj):
                 while True:
                     data = json.loads(await ws.recv())
                     radar_obj.process_data(data)
-        except: await asyncio.sleep(5)
+        except:
+            await asyncio.sleep(5)
 
-# --- UI DESIGN ---
+
+# --- UI TASARIMI ---
 st.set_page_config(layout="wide", page_title="SinyalEngineer Radar")
 
 st.markdown("""
@@ -117,7 +126,7 @@ st.markdown("""
     .dump-label { background-color: #ff4b4b; color: white; padding: 2px 8px; border-radius: 4px; font-weight: bold; }
     .stat-card { background-color: #1e2127; padding: 10px; border-radius: 10px; margin-bottom: 10px; border-left: 5px solid #f1c40f; }
     .warning-box { color: #ffb703; font-size: 0.75rem; font-style: italic; border-top: 1px solid #333; padding-top: 5px; }
-    .hourly-reset-text { color: #555; font-size: 0.7rem; font-weight: bold; margin-bottom: 5px; }
+    .hourly-reset-text { color: #555; font-size: 0.65rem; font-weight: bold; margin-bottom: 5px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -126,67 +135,70 @@ if "thread_started" not in st.session_state:
     threading.Thread(target=lambda: asyncio.run(binance_worker(radar)), daemon=True).start()
     st.session_state.thread_started = True
 
-# Header Area
+# Header
 h1, h2, h3 = st.columns([2, 1, 1])
 with h1:
     st.title("🛡️ Binance Futures Radar")
-    st.markdown('<div class="warning-box">⚠️ Avoid high leverage trading. / Yüksek kaldıraçlı işlemlerden uzak durunuz.</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="warning-box">⚠️ Avoid high leverage trading. / Yüksek kaldıraçlı işlemlerden uzak durunuz.</div>',
+        unsafe_allow_html=True)
 
 with h2:
     is_alive = (time.time() - radar.last_heartbeat) < 10
     status_html = '<span class="status-live">● SYSTEM LIVE</span>' if is_alive else '<span class="status-offline">● SYSTEM OFFLINE</span>'
     st.markdown(f"<div style='margin-top:10px;'>{status_html}</div>", unsafe_allow_html=True)
-    st.markdown(f'<div style="margin-top:5px;"><a href="https://x.com/SinyalEngineer" target="_blank" style="color:white; text-decoration:none; font-weight:bold;">𝕏 @SinyalEngineer</a><br><small style="color:#888;">Follow for more / Takip et</small></div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div style="margin-top:5px;"><a href="https://x.com/SinyalEngineer" target="_blank" style="color:white; text-decoration:none; font-weight:bold;">𝕏 @SinyalEngineer</a><br><small style="color:#888;">Follow for more / Daha fazla program için takip et</small></div>',
+        unsafe_allow_html=True)
 
 with h3:
     st.metric("Pairs Tracked", radar.total_pairs)
 
 st.divider()
 
-# Main Body
+# Layout
 col_side, col_main = st.columns([1, 4])
+
+# ARAMA KUTUSU (Hızlı çalışması için döngü dışında)
+with col_main:
+    c_title, c_search = st.columns([3, 1])
+    c_title.subheader("📡 Live Signals")
+    search_query = c_search.text_input("Filter", placeholder="Sym...", label_visibility="collapsed").upper()
+
 placeholder_side = col_side.empty()
 placeholder_main = col_main.empty()
 
 while True:
-    # Sol Panel: Top 5 (Hourly)
+    # Sol Panel: Top 5 (Hourly Reset Enabled)
     with placeholder_side.container():
         st.subheader("🔥 Top 5 Activity")
-        st.markdown('<div class="hourly-reset-text">RESETS EVERY HOUR / HER SAAT SIFIRLANIR</div>', unsafe_allow_html=True)
+        st.markdown('<div class="hourly-reset-text">RESETS HOURLY / SAATLİK SIFIRLANIR</div>', unsafe_allow_html=True)
         with radar.lock:
             sorted_stats = sorted(radar.stats.items(), key=lambda x: x[1]['PUMP'] + x[1]['DUMP'], reverse=True)[:5]
-            if not sorted_stats: st.write("Waiting for signals this hour...")
+            if not sorted_stats: st.write("Waiting for data...")
             for sym, counts in sorted_stats:
-                st.markdown(f'''
-                    <div class="stat-card">
-                        <b style="color:#f1c40f;">{sym}</b><br>
-                        <small>
-                            <span style="color:#00ff88;">PUMP: {counts["PUMP"]}</span> | 
-                            <span style="color:#ff4b4b;">DUMP: {counts["DUMP"]}</span>
-                        </small>
-                    </div>''', unsafe_allow_html=True)
+                st.markdown(
+                    f'''<div class="stat-card"><b style="color:#f1c40f;">{sym}</b><br><small><span style="color:#00ff88;">P: {counts["PUMP"]}</span> | <span style="color:#ff4b4b;">D: {counts["DUMP"]}</span></small></div>''',
+                    unsafe_allow_html=True)
 
     # Sağ Panel: Canlı Tablo
     with placeholder_main.container():
-        st.subheader("📡 Live Signals")
         with radar.lock:
-            if radar.signals:
+            display_data = [s for s in radar.signals if search_query in s['Symbol']] if search_query else radar.signals
+
+            if display_data:
                 html = "<table style='width:100%; border-collapse: collapse; text-align: left;'>"
-                html += "<tr style='color:#888; border-bottom:2px solid #333;'><th>Time</th><th>Symbol</th><th>Price</th><th>1m Chg</th><th>Type</th><th>OI Confirmation</th></tr>"
-                for row in radar.signals:
+                html += "<tr style='color:#888; border-bottom:2px solid #333;'><th>Time</th><th>Symbol</th><th>Price</th><th>1m Chg</th><th>Type</th><th>OI</th></tr>"
+                for row in display_data:
                     color = "#00ff88" if row['P/D'] == "PUMP" else "#ff4b4b"
                     oi_style = "color:#00ff88; font-weight:bold;" if "Confirmed" in row['OI'] else "color:#888;"
                     html += f"<tr style='border-bottom:1px solid #222; height:40px;'>"
-                    html += f"<td>{row['Time']}</td>"
-                    html += f"<td style='color:#f1c40f; font-weight:bold;'>{row['Symbol']}</td>"
-                    html += f"<td>{row['Price']}</td>"
-                    html += f"<td style='color:{color}; font-weight:bold;'>{row['Change']}</td>"
-                    html += f"<td><span class='{'pump-label' if row['P/D']=='PUMP' else 'dump-label'}'>{row['P/D']}</span></td>"
-                    html += f"<td style='{oi_style}'>{row['OI']}</td>"
-                    html += "</tr>"
-                html += "</table>"
-                st.markdown(html, unsafe_allow_html=True)
+                    html += f"<td>{row['Time']}</td><td style='color:#f1c40f; font-weight:bold;'>{row['Symbol']}</td>"
+                    html += f"<td>{row['Price']}</td><td style='color:{color}; font-weight:bold;'>{row['Change']}</td>"
+                    html += f"<td><span class='{'pump-label' if row['P/D'] == 'PUMP' else 'dump-label'}'>{row['P/D']}</span></td>"
+                    html += f"<td style='{oi_style}'>{row['OI']}</td></tr>"
+                st.markdown(html + "</table>", unsafe_allow_html=True)
             else:
-                st.info("Scanning market... (OI checked 🔍)")
+                st.info("Scanning market... (OI filtering enabled 🔍)")
 
     time.sleep(1)
