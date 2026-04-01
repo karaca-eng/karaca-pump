@@ -10,12 +10,12 @@ import numpy as np
 from datetime import datetime
 from collections import deque
 
-# --- CONFIGURATION ---
-VOL_THRESHOLD = 30000  
-SHORT_WINDOW = 60  
-SHORT_PUMP_LIMIT = 1.0  
-MAX_DISPLAY_ROWS = 100
-RSI_PERIOD = 14
+# --- KONFİGÜRASYON ---
+VOL_THRESHOLD = 30000  # 30k USDT Hacim Barajı
+SHORT_WINDOW = 60      # 1 Dakika (60 saniye)
+SHORT_PUMP_LIMIT = 1.0 # %1.0 Değişim
+MAX_DISPLAY_ROWS = 100 # Tabloda görünecek max satır
+RSI_PERIOD = 14        # RSI Periyodu
 
 class MarketRadar:
     def __init__(self):
@@ -28,19 +28,24 @@ class MarketRadar:
         self.last_heartbeat = 0  
         self.total_pairs = 0
         self.last_reset_hour = datetime.now().hour
+        # Cloud engellemesini aşmak için Header tanımlıyoruz
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
 
     def check_hourly_reset(self):
+        """Saat başı istatistikleri sıfırlar"""
         current_hour = datetime.now().hour
         if current_hour != self.last_reset_hour:
-            self.stats.clear()
-            self.last_reset_hour = current_hour
+            with self.lock:
+                self.stats.clear()
+                self.last_reset_hour = current_hour
 
     def calculate_rsi(self, symbol):
-        """Binance REST API'den mum verilerini çekip RSI hesaplar"""
+        """Binance REST API üzerinden mum verilerini çekip RSI hesaplar"""
         try:
-            # Binance Futures API klines endpoint
             url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval=1m&limit=50"
-            response = requests.get(url, timeout=3)
+            response = requests.get(url, headers=self.headers, timeout=5)
             
             if response.status_code != 200:
                 return None
@@ -49,9 +54,7 @@ class MarketRadar:
             if not isinstance(data, list) or len(data) < RSI_PERIOD:
                 return None
             
-            # Kapanış fiyatlarını al (index 4)
             closes = np.array([float(m[4]) for m in data])
-            
             diff = np.diff(closes)
             gain = np.where(diff > 0, diff, 0)
             loss = np.where(diff < 0, -diff, 0)
@@ -63,27 +66,30 @@ class MarketRadar:
             rs = avg_gain / avg_loss
             rsi = 100 - (100 / (1 + rs))
             return round(rsi, 1)
-        except Exception as e:
+        except:
             return None
 
     def get_open_interest(self, symbol):
+        """Binance REST API üzerinden Open Interest verisini çeker"""
         try:
             url = f"https://fapi.binance.com/fapi/v1/openInterest?symbol={symbol}"
-            response = requests.get(url, timeout=2)
+            response = requests.get(url, headers=self.headers, timeout=5)
             if response.status_code == 200:
                 return float(response.json()['openInterest'])
         except: pass
         return None
 
     def process_liquidation(self, data):
+        """Likidasyon verilerini WebSocket'ten yakalar"""
         try:
             order = data['o']
             symbol = order['s']
-            side = order['S']
+            side = order['S'] # SELL = Short Liquidation, BUY = Long Liquidation
             self.recent_liquidations[symbol] = {"side": side, "time": time.time()}
         except: pass
 
     def process_ticker(self, data):
+        """Fiyat ve Hacim verilerini WebSocket'ten işler"""
         now = time.time()
         with self.lock:
             self.check_hourly_reset()
@@ -111,18 +117,17 @@ class MarketRadar:
             elif chg_1m <= -SHORT_PUMP_LIMIT: res_type = "DUMP"
 
         if res_type:
-            # ÖNEMLİ: RSI hesaplamasını kilit dışında yapmak performansı artırır ancak 
-            # mevcut yapıyı bozmamak için burada hızlıca çağırıyoruz.
+            # Sinyal anında RSI ve OI Kontrolü
             rsi = self.calculate_rsi(symbol)
-            
             current_oi = self.get_open_interest(symbol)
             last_oi = self.oi_cache.get(symbol, 0)
             oi_conf = (current_oi > last_oi) if (current_oi and last_oi) else False
             if current_oi: self.oi_cache[symbol] = current_oi
             
+            # Likidasyon (Squeeze) Kontrolü
             liqd = self.recent_liquidations.get(symbol)
             is_squeeze = False
-            if liqd and (now - liqd['time'] < 10):
+            if liqd and (now - liqd['time'] < 15):
                 if res_type == "PUMP" and liqd['side'] == "SELL": is_squeeze = True
                 if res_type == "DUMP" and liqd['side'] == "BUY": is_squeeze = True
 
@@ -131,8 +136,7 @@ class MarketRadar:
     def add_signal(self, symbol, price, change, s_type, confirmed, rsi, is_squeeze):
         t_str = datetime.now().strftime("%H:%M:%S")
         sym_clean = symbol.replace("USDT", "")
-        
-        # Aynı dakika içinde aynı sinyali tekrar basma
+        # Tekrar eden sinyalleri engelle
         for s in self.signals[:5]:
             if s.get('Symbol') == sym_clean and s.get('Time', '')[:-1] == t_str[:-1]: return
         
@@ -167,7 +171,7 @@ async def binance_worker(radar_obj):
                 radar_obj.process_liquidation(data)
     await asyncio.gather(handle_tickers(), handle_liquidations())
 
-# --- UI DESIGN ---
+# --- UI TASARIMI ---
 st.set_page_config(layout="wide", page_title="SinyalEngineer Radar")
 
 st.markdown("""
@@ -180,8 +184,10 @@ st.markdown("""
     .warning-box { color: #ffb703; font-size: 0.75rem; font-style: italic; border-top: 1px solid #333; padding-top: 5px; }
     .squeeze-text { color: #ff4b4b; font-weight: bold; animation: blinker 1s linear infinite; }
     @keyframes blinker { 50% { opacity: 0; } }
+    
+    /* Tek Satır Garantisi ve Link Stili */
     table { width: 100%; border-collapse: collapse; table-layout: auto; }
-    th, td { white-space: nowrap; padding: 8px 12px; text-align: left; }
+    th, td { white-space: nowrap; padding: 8px 12px; text-align: left; border-bottom: 1px solid #222; }
     .sym-link { color: #f1c40f; text-decoration: none; font-weight: bold; }
     .sym-link:hover { text-decoration: underline; color: #ffffff; }
     </style>
@@ -192,7 +198,7 @@ if "thread_started" not in st.session_state:
     threading.Thread(target=lambda: asyncio.run(binance_worker(radar)), daemon=True).start()
     st.session_state.thread_started = True
 
-# Header
+# Üst Panel (Header)
 h1, h2, h3 = st.columns([2, 1, 1])
 with h1:
     st.title("🛡️ Binance Futures Radar")
@@ -208,21 +214,25 @@ with h3:
 
 st.divider()
 
+# Ana Ekran Düzeni
 col_side, col_main = st.columns([1, 4])
 
 with col_main:
+    # Arama kutusu tablo başlığıyla aynı hizada
     c_title, c_search = st.columns([3, 1])
     c_title.subheader("📡 Live Signals (Click symbol for chart)")
-    search_query = c_search.text_input("Filter", placeholder="Sym...", label_visibility="collapsed", key="search_box").upper()
+    search_query = c_search.text_input("Filter", placeholder="Sym...", label_visibility="collapsed", key="global_search").upper()
 
 placeholder_side = col_side.empty()
 placeholder_main = col_main.empty()
 
 while True:
+    # Sol Panel: Top 5 Activity
     with placeholder_side.container():
         st.subheader("🔥 Top 5 Activity")
         with radar.lock:
             sorted_stats = sorted(radar.stats.items(), key=lambda x: x[1]['PUMP'] + x[1]['DUMP'], reverse=True)[:5]
+            if not sorted_stats: st.write("Waiting for data...")
             for sym, counts in sorted_stats:
                 tv_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{sym}USDT.P"
                 st.markdown(f'''<div class="stat-card">
@@ -230,8 +240,10 @@ while True:
                     <small><span style="color:#00ff88;">↑ {counts["PUMP"]}</span> | <span style="color:#ff4b4b;">↓ {counts["DUMP"]}</span></small>
                 </div>''', unsafe_allow_html=True)
 
+    # Sağ Panel: Canlı Sinyal Tablosu
     with placeholder_main.container():
         with radar.lock:
+            # Arama filtresi uygulaması
             display_data = [s for s in radar.signals if search_query in s.get('Symbol', '')] if search_query else radar.signals
             
             if display_data:
@@ -255,7 +267,7 @@ while True:
                     p_type = row.get('P/D', 'NONE')
                     p_color = '#00ff88' if 'PUMP' in p_type else '#ff4b4b'
                     
-                    html += f"<tr style='border-bottom:1px solid #222; height:40px;'>"
+                    html += f"<tr>"
                     html += f"<td>{row.get('Time', '--')}</td>"
                     html += f"<td><a href='{tv_url}' target='_blank' class='sym-link'>{sym}</a> <small style='color:#00ff88;'>↑{counts['PUMP']}</small> <small style='color:#ff4b4b;'>↓{counts['DUMP']}</small></td>"
                     html += f"<td>{row.get('Price', '0')}</td>"
@@ -265,6 +277,7 @@ while True:
                     html += f"<td>{sq_html}</td>"
                     html += f"<td>{row.get('OI', '--')}</td></tr>"
                 st.markdown(html + "</table>", unsafe_allow_html=True)
-            else: st.info("Scanning for High Conviction Signals... 🔍")
+            else:
+                st.info("Scanning for High Conviction Signals... 🔍")
 
     time.sleep(1)
