@@ -175,7 +175,7 @@ col_side, col_main = st.columns([1, 4])
 
 with col_main:
     header_col, search_col = st.columns([3, 1])
-    header_col.subheader("📡 Live Signals (Whale 🐳 Filter: 3m/%2/100k)")
+    header_col.subheader("📡 Live Signals Whale 🐳 ")
     search_query = search_col.text_input("Filter", placeholder="🔍 Sym...", label_visibility="collapsed", key="gs").upper()
 
 placeholder_side = col_side.empty()
