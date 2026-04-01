@@ -8,14 +8,15 @@ import threading
 from datetime import datetime
 from collections import deque
 
-# --- CONFIGURATION (3DK / 60K AYARI) ---
-VOL_THRESHOLD_3M = 60000  # 3 Dakikada toplam 60k USDT Hacim
-PUMP_LIMIT_3M = 1.0       # 3 Dakikada min %1.0 Değişim
-TRI_WINDOW = 180          # 3 Dakika (Saniye cinsinden)
+# --- CONFIGURATION (3DK / 60K / 1.1%) ---
+VOL_THRESHOLD_3M = 60000  
+PUMP_LIMIT_3M = 1.1       
+STRONG_TREND_LIMIT = 3.0  
+TRI_WINDOW = 180          
 
-SHORT_WINDOW = 60         # 1m (Tablo için)
-MID_WINDOW = 300          # 5m (Tablo için)
-LONG_WINDOW = 900         # 15m (Tablo için)
+SHORT_WINDOW = 60         
+MID_WINDOW = 300          
+LONG_WINDOW = 900         
 MAX_DISPLAY_ROWS = 100 
 
 class MarketRadar:
@@ -60,45 +61,51 @@ class MarketRadar:
         current = hist[-1]
         data_age = now - hist[0][0] 
 
-        # 3 Dakikalık Tetikleyici Verileri
+        # 3 Dakikalık Tetikleyici (Asıl Karar Mekanizması)
         past_3m = next((x for x in hist if now - x[0] <= TRI_WINDOW), hist[0])
         chg_3m = ((current[1] - past_3m[1]) / past_3m[1]) * 100
         vol_3m = current[2] - past_3m[2]
 
-        # Tablo için Diğer Veriler
+        # Tablo Verileri
         past_1m = next((x for x in hist if now - x[0] <= SHORT_WINDOW), hist[0])
         past_5m = next((x for x in hist if now - x[0] <= MID_WINDOW), hist[0])
         
-        chg_1m = ((current[1] - past_1m[1]) / past_1m[1]) * 100
-        chg_5m = ((current[1] - past_5m[1]) / past_5m[1]) * 100 if data_age >= MID_WINDOW else 0.0
-        chg_15m = ((current[1] - hist[0][1]) / hist[0][1]) * 100 if data_age >= LONG_WINDOW else 0.0
+        c1 = ((current[1] - past_1m[1]) / past_1m[1]) * 100
+        c5 = ((current[1] - past_5m[1]) / past_5m[1]) * 100 if data_age >= MID_WINDOW else 0.0
+        c15 = ((current[1] - hist[0][1]) / hist[0][1]) * 100 if data_age >= LONG_WINDOW else 0.0
 
         res_type = None
-        # TETİKLEME: 3 Dakikalık Hacim ve Fiyat Hareketine Göre
         if vol_3m >= VOL_THRESHOLD_3M:
             if chg_3m >= PUMP_LIMIT_3M: res_type = "PUMP"
             elif chg_3m <= -PUMP_LIMIT_3M: res_type = "DUMP"
 
         if res_type:
-            self.add_signal(symbol, current[1], chg_1m, chg_5m, chg_15m, res_type)
+            self.add_signal(symbol, current[1], c1, chg_3m, c5, c15, res_type)
 
-    def add_signal(self, symbol, price, c1, c5, c15, s_type):
+    def add_signal(self, symbol, price, c1, c3, c5, c15, s_type):
         t_str = datetime.now().strftime("%H:%M:%S")
         sym_clean = symbol.replace("USDT", "")
         with self.lock:
-            # Aynı dakika içinde aynı yöne tekrar basma
+            # Tekrar engelleme
             for s in self.signals[:5]:
                 if s.get('Symbol') == sym_clean and s.get('Time', '')[:-1] == t_str[:-1] and s.get('P/D') == s_type: return
             
+            # İstatistik Güncelleme
             if sym_clean not in self.stats_hourly: self.stats_hourly[sym_clean] = {"PUMP": 0, "DUMP": 0}
             self.stats_hourly[sym_clean][s_type] += 1
             if sym_clean not in self.stats_daily: self.stats_daily[sym_clean] = {"PUMP": 0, "DUMP": 0}
             self.stats_daily[sym_clean][s_type] += 1
             
+            # Snapshots (Anlık sayıları dondur)
+            sp = self.stats_daily[sym_clean]["PUMP"]
+            sd = self.stats_daily[sym_clean]["DUMP"]
+            is_strong = abs(c15) >= STRONG_TREND_LIMIT
+
             self.signals.insert(0, {
-                "Time": t_str, "Symbol": sym_clean, "Price": f"{price:.4f}" if price < 1 else f"{price:.2f}",
-                "C1": c1, "C5": c5, "C15": c15, "P/D": s_type,
-                "SnapP": self.stats_daily[sym_clean]["PUMP"], "SnapD": self.stats_daily[sym_clean]["DUMP"]
+                "Time": t_str, "Symbol": sym_clean, 
+                "Price": f"{price:.4f}" if price < 1 else f"{price:.2f}",
+                "C1": c1, "C3": c3, "C5": c5, "C15": c15, 
+                "P/D": s_type, "SnapP": sp, "SnapD": sd, "Strong": is_strong
             })
             if len(self.signals) > MAX_DISPLAY_ROWS: self.signals.pop()
 
@@ -120,7 +127,6 @@ st.set_page_config(layout="wide", page_title="SinyalEngineer Radar")
 
 st.markdown("""
     <style>
-    .main { background-color: #0e1117; }
     .status-live { color: #00ff88; font-weight: bold; border: 1px solid #00ff88; padding: 2px 10px; border-radius: 15px; font-size: 0.8rem; }
     .pump-label { background-color: #00ff88; color: black; padding: 2px 8px; border-radius: 4px; font-weight: bold; }
     .dump-label { background-color: #ff4b4b; color: white; padding: 2px 8px; border-radius: 4px; font-weight: bold; }
@@ -130,6 +136,8 @@ st.markdown("""
     .sym-link { color: #f1c40f; text-decoration: none; font-weight: bold; }
     .green-arrow { color: #00ff88; font-weight: bold; }
     .red-arrow { color: #ff4b4b; font-weight: bold; }
+    .strong-pump { background-color: rgba(0, 255, 136, 0.12) !important; }
+    .strong-dump { background-color: rgba(255, 75, 75, 0.12) !important; }
     div[data-testid="stTextInput"] > div { min-height: 0px; padding: 0px; }
     div[data-testid="stTextInput"] input { padding: 5px 10px; font-size: 0.85rem; }
     </style>
@@ -151,13 +159,11 @@ h3.metric("Pairs Tracked", radar.total_pairs)
 
 st.divider()
 
-# Layout
 col_side, col_main = st.columns([1, 4])
-
 with col_main:
     header_col, search_col = st.columns([3, 1])
-    header_col.subheader("📡 Live Signals (3m/60k Trigger)")
-    search_query = search_col.text_input("Filter", placeholder="🔍 Sym...", label_visibility="collapsed").upper()
+    header_col.subheader("📡 Live Signals (3m/60k/1.1%)")
+    search_query = search_col.text_input("Filter", placeholder="🔍 Sym...", label_visibility="collapsed", key="gs").upper()
 
 placeholder_side = col_side.empty()
 placeholder_main = col_main.empty()
@@ -171,33 +177,36 @@ while True:
     with placeholder_side.container():
         st.subheader("🔥 Top 5 Activity")
         with radar.lock:
-            h_stats = dict(radar.stats_hourly)
+            # Defensive get for attributes
+            h_stats = getattr(radar, 'stats_hourly', {})
             sorted_stats = sorted(h_stats.items(), key=lambda x: x[1]['PUMP'] + x[1]['DUMP'], reverse=True)[:5]
-            if not sorted_stats: st.write("Scanning...")
             for sym, counts in sorted_stats:
                 tv_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{sym}USDT.P"
-                st.markdown(f'''<div class="stat-card">
-                    <a href="{tv_url}" target="_blank" class="sym-link">{sym}</a><br>
-                    <small><span class="green-arrow">↑ {counts["PUMP"]}</span> | <span class="red-arrow">↓ {counts["DUMP"]}</span></small>
-                </div>''', unsafe_allow_html=True)
+                st.markdown(f'''<div class="stat-card"><a href="{tv_url}" target="_blank" class="sym-link">{sym}</a><br>
+                <small><span class="green-arrow">↑ {counts["PUMP"]}</span> | <span class="red-arrow">↓ {counts["DUMP"]}</span></small></div>''', unsafe_allow_html=True)
 
     with placeholder_main.container():
         with radar.lock:
             signals_copy = list(radar.signals)
             display_data = [s for s in signals_copy if search_query in s.get('Symbol', '')] if search_query else signals_copy
             if display_data:
-                html = "<table><tr><th>Time</th><th>Symbol (Daily ↑/↓)</th><th>Price</th><th>1m</th><th>5m</th><th>15m</th><th>Type</th></tr>"
+                html = "<table><tr><th>Time</th><th>Symbol (Daily ↑/↓)</th><th>Price</th><th>1m</th><th>3m(T)</th><th>5m</th><th>15m</th><th>Type</th></tr>"
                 for row in display_data:
                     sym = row.get('Symbol', 'UNK'); p_count = row.get('SnapP', 0); d_count = row.get('SnapD', 0)
                     tv_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{sym}USDT.P"
-                    c1 = row.get('C1', 0); c5 = row.get('C5', 0); c15 = row.get('C15', 0)
-                    html += f"<tr><td>{row.get('Time')}</td>"
+                    c1, c3, c5, c15 = row.get('C1', 0), row.get('C3', 0), row.get('C5', 0), row.get('C15', 0); p_type = row.get('P/D')
+                    row_style = ""
+                    if row.get('Strong'):
+                        row_style = ' class="strong-pump"' if p_type == "PUMP" else ' class="strong-dump"'
+                    
+                    html += f"<tr{row_style}><td>{row.get('Time')}</td>"
                     html += f"<td><a href='{tv_url}' target='_blank' class='sym-link'>{sym}</a> <small class='green-arrow'>↑{p_count}</small> <small class='red-arrow'>↓{d_count}</small></td>"
                     html += f"<td>{row.get('Price')}</td>"
                     html += f"<td style='color:{get_color(c1)}; font-weight:bold;'>{c1:+.2f}%</td>"
+                    html += f"<td style='color:{get_color(c3)}; border:1px solid #333; font-weight:bold;'>{c3:+.2f}%</td>"
                     html += f"<td style='color:{get_color(c5)}; font-weight:bold;'>{c5:+.2f}%</td>"
                     html += f"<td style='color:{get_color(c15)}; font-weight:bold;'>{c15:+.2f}%</td>"
-                    html += f"<td><span class='{'pump-label' if row.get('P/D')=='PUMP' else 'dump-label'}'>{row.get('P/D')}</span></td></tr>"
+                    html += f"<td><span class='{'pump-label' if p_type=='PUMP' else 'dump-label'}'>{p_type}</span></td></tr>"
                 st.markdown(html + "</table>", unsafe_allow_html=True)
-            else: st.info("Scanning Market (3m filter active)...")
+            else: st.info("Scanning Market... 🔍")
     time.sleep(1)
