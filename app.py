@@ -190,7 +190,7 @@ st.divider()
 col_side, col_main = st.columns([1, 4])
 with col_main:
     header_col, search_col = st.columns([3, 1])
-    header_col.subheader("📡 Live Signals (4H Counters Active)")
+    header_col.subheader("📡 Live Signals")
     search_query = search_col.text_input("Filter", placeholder="🔍 Sym...", label_visibility="collapsed",
                                          key="gs").upper()
 
